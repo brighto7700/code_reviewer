@@ -61,9 +61,7 @@ async def handle_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     msg_date = update.message.date
 
-    # 1. IGNORE OLD MESSAGES (The Fix)
-    # If message is older than 2 minutes (120 seconds), ignore it.
-    # This prevents the bot from answering 50 old messages when it restarts.
+    # 1. IGNORE OLD MESSAGES
     if datetime.now(timezone.utc) - msg_date > timedelta(seconds=120):
         logging.info(f"Skipping old message from {msg_date}")
         return
@@ -76,10 +74,6 @@ async def handle_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 4. Reply
     try:
-        # Escaping special characters for MarkdownV2 can be tricky, 
-        # but let's try to wrap the response in a way that's more robust
-        # or stick to Markdown if it's simpler. Gemini often returns Markdown.
-        # We'll stick to 'Markdown' (V1) but handle exceptions.
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=status_msg.message_id,
@@ -105,4 +99,4 @@ if __name__ == '__main__':
     application.add_handler(mention_handler)
 
     print("✅ Bot is running on Replit... (Old messages will be ignored)")
-    application.run_polling()
+    application.run_polling(drop_pending_updates=True)
