@@ -46,3 +46,7 @@ typing_extensions==4.15.0
 uritemplate==4.2.0
 urllib3==2.6.3
 yarl==1.22.0
+python-telegram-bot
+groq
+flask
+gunicorn
