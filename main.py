@@ -8,24 +8,23 @@ from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# Gemini libraries
-import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted
+# xAI (Grok) libraries
+from openai import OpenAI
 
 # --- CONFIGURATION (Replit Style) ---
 try:
     TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
-    GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
+    XAI_API_KEY = os.environ['XAI_API_KEY']
 except KeyError:
-    print("❌ ERROR: Keys not found! Please open the Secrets tab (Lock icon) and add TELEGRAM_TOKEN and GEMINI_API_KEY.")
+    print("❌ ERROR: Keys not found! Please open the Secrets tab (Lock icon) and add TELEGRAM_TOKEN and XAI_API_KEY.")
     exit(1)
 
-# --- GEMINI SETUP ---
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel(
-    'gemini-2.0-flash',
-    system_instruction="You are a senior software engineer and code reviewer. Your goal is to analyze code, find bugs, suggest optimizations, and explain best practices. Be concise but helpful."
+# --- GROK SETUP ---
+client = OpenAI(
+    api_key=XAI_API_KEY,
+    base_url="https://api.x.ai/v1",
 )
+MODEL_NAME = "grok-2-1212"
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -33,27 +32,35 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# --- HELPER FUNCTION: GET GEMINI RESPONSE SAFELY ---
-async def get_gemini_response(prompt, retries=3):
-    """Tries to get a response, waiting if we hit a rate limit."""
+# --- HELPER FUNCTION: GET GROK RESPONSE SAFELY ---
+async def get_grok_response(prompt, retries=3):
+    """Tries to get a response from Grok."""
     for attempt in range(retries):
         try:
-            response = model.generate_content(prompt)
-            return response.text
-        except ResourceExhausted:
-            # If we hit the limit, wait and try again
-            wait_time = 5 * (attempt + 1) # Wait 5s, then 10s, then 15s
-            logging.warning(f"⚠️ Rate limit hit. Waiting {wait_time} seconds...")
-            await asyncio.sleep(wait_time)
+            # We use asyncio.to_thread because the OpenAI client is synchronous
+            response = await asyncio.to_thread(
+                client.chat.completions.create,
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": "You are a senior software engineer and code reviewer. Your goal is to analyze code, find bugs, suggest optimizations, and explain best practices. Be concise but helpful."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            return response.choices[0].message.content
         except Exception as e:
-            return f"⚠️ Error: {str(e)}"
+            if "rate_limit" in str(e).lower():
+                wait_time = 5 * (attempt + 1)
+                logging.warning(f"⚠️ Rate limit hit. Waiting {wait_time} seconds...")
+                await asyncio.sleep(wait_time)
+            else:
+                return f"⚠️ Error: {str(e)}"
     return "⚠️ System is too busy. Please try again in a minute."
 
 # --- BOT FUNCTIONS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text="I am ready! Mention me or reply to a message with code, and I will review it."
+        text="I am ready! I'm now powered by xAI Grok. Mention me or reply to a message with code, and I will review it."
     )
 
 async def handle_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -67,10 +74,10 @@ async def handle_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 2. Send "Thinking..."
-    status_msg = await context.bot.send_message(chat_id=chat_id, text="👀 Reviewing code...")
+    status_msg = await context.bot.send_message(chat_id=chat_id, text="👀 Reviewing code with Grok...")
 
     # 3. Get Response with Retry Logic
-    bot_response = await get_gemini_response(user_message)
+    bot_response = await get_grok_response(user_message)
 
     # 4. Reply
     try:
@@ -82,7 +89,6 @@ async def handle_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logging.error(f"Markdown parsing failed: {e}")
-        # Sometimes Markdown parsing fails, send as plain text
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=status_msg.message_id,
@@ -98,5 +104,5 @@ if __name__ == '__main__':
     application.add_handler(start_handler)
     application.add_handler(mention_handler)
 
-    print("✅ Bot is running on Replit... (Old messages will be ignored)")
+    print("✅ Bot is running on Replit with Grok...")
     application.run_polling(drop_pending_updates=True)
