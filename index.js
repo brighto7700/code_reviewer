@@ -148,7 +148,6 @@ bot.on('text', async (ctx) => {
                     
                     let formattedResults = "No results found.";
                     
-                    // NEW: Inner Try/Catch specifically for the web scraper
                     try {
                         const searchResults = await google.search(args.query, {
                             page: 0,
@@ -163,7 +162,6 @@ bot.on('text', async (ctx) => {
                         }
                     } catch (scrapeError) {
                         console.error("Scraper Error:", scrapeError.message);
-                        // Tell the AI that the search failed so it can apologize natively!
                         formattedResults = "SYSTEM NOTE: The web search failed because the cloud server was blocked. Apologize to the user and tell them you cannot access the live internet right now.";
                     }
 
@@ -202,7 +200,8 @@ bot.on('text', async (ctx) => {
 
     } catch (error) {
         console.error("API Error:", error);
-        ctx.reply("❌ An error occurred generating a response.");
+        // Expose the raw error to Telegram so we stop guessing!
+        ctx.reply(`❌ **SYSTEM ERROR:**\n\`\`\`text\n${error.message || "Unknown API Error"}\n\`\`\``, { parse_mode: 'Markdown' });
     }
 });
 
