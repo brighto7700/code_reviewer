@@ -98,7 +98,7 @@ def run_bot():
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
     print(f"✅ CodeBot Smart Mode is running on {MODEL_NAME}...")
-    application.run_polling(drop_pending_updates=True)
+    application.run_polling(drop_pending_updates=True, stop_signals=())
 
 # This thread starts the exact moment Gunicorn loads your file!
 bot_thread = Thread(target=run_bot)
