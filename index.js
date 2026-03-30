@@ -1,7 +1,7 @@
 const express = require('express');
 const { Telegraf } = require('telegraf');
 const Groq = require('groq-sdk');
-const { search } = require('duck-duck-scrape'); 
+const google = require('googlethis'); 
 
 // --- 1. HEALTH CHECK SERVER ---
 const app = express();
@@ -66,7 +66,7 @@ const tools = [
         type: "function",
         function: {
             name: "search_web",
-            description: "Searches the web using DuckDuckGo to find real-time information, articles, and news. Use this when the user asks for links, current events, or facts you aren't sure about.",
+            description: "Searches the web using Google to find real-time information, articles, and news. Use this when the user asks for links, current events, or facts you aren't sure about.",
             parameters: {
                 type: "object",
                 properties: {
@@ -84,7 +84,7 @@ const tools = [
 // --- 6. TELEGRAM BOT LOGIC ---
 bot.start((ctx) => {
     chatMemory.set(ctx.chat.id, []);
-    ctx.reply("🧠 **I am CodeBot (Smart Mode)**\n\nNo commands needed! Just talk to me naturally. I can now search the web for you!", { parse_mode: 'Markdown' });
+    ctx.reply("🧠 **I am CodeBot (Smart Mode)**\n\nNo commands needed! Just talk to me naturally. I can now search Google for you!", { parse_mode: 'Markdown' });
 });
 
 bot.on('text', async (ctx) => {
@@ -137,19 +137,35 @@ bot.on('text', async (ctx) => {
         const responseMessage = chatCompletion.choices[0].message;
 
         if (responseMessage.tool_calls) {
-            await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, "🔍 Searching the live web...");
+            await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, "🔍 Searching Google...");
             
             messagesPayload.push(responseMessage);
 
             for (const toolCall of responseMessage.tool_calls) {
                 if (toolCall.function.name === "search_web") {
                     const args = JSON.parse(toolCall.function.arguments);
-                    console.log(`AI is searching DuckDuckGo for: ${args.query}`);
+                    console.log(`AI is searching Google for: ${args.query}`);
                     
-                    const searchResults = await search(args.query);
-                    const formattedResults = searchResults.results.slice(0, 5).map(res => 
-                        `Title: ${res.title}\nURL: ${res.url}\nDescription: ${res.description}`
-                    ).join('\n\n');
+                    let formattedResults = "No results found.";
+                    
+                    // NEW: Inner Try/Catch specifically for the web scraper
+                    try {
+                        const searchResults = await google.search(args.query, {
+                            page: 0,
+                            safe: false,
+                            parse_ads: false
+                        });
+                        
+                        if (searchResults && searchResults.results && searchResults.results.length > 0) {
+                            formattedResults = searchResults.results.slice(0, 5).map(res => 
+                                `Title: ${res.title}\nURL: ${res.url}\nDescription: ${res.description}`
+                            ).join('\n\n');
+                        }
+                    } catch (scrapeError) {
+                        console.error("Scraper Error:", scrapeError.message);
+                        // Tell the AI that the search failed so it can apologize natively!
+                        formattedResults = "SYSTEM NOTE: The web search failed because the cloud server was blocked. Apologize to the user and tell them you cannot access the live internet right now.";
+                    }
 
                     messagesPayload.push({
                         tool_call_id: toolCall.id,
