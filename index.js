@@ -112,10 +112,11 @@ bot.on('text', async (ctx) => {
         if (repliedCode) contextStatus = "Scanning context...";
     }
 
-    const messagesPayload = [
-        { role: "system", content: "You are CodeBot, an expert software engineer. You have access to the internet. If a user asks for articles, links, or current facts, ALWAYS use the search_web tool." },
+        const messagesPayload = [
+        { role: "system", content: "You are CodeBot, an expert senior software engineer. You have internet access to look up current information, prices, and documentation. Answer the user naturally." },
         ...history 
     ];
+
     
     let newPrompt = userText;
     if (repliedCode) {
