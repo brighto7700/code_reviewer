@@ -1,0 +1,32 @@
+{
+  "name": "code_reviewer",
+  "version": "1.0.0",
+  "description": "Smart Telegram CodeBot powered by Groq",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brighto7700/code_reviewer.git"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "groq",
+    "ai",
+    "code-review"
+  ],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/brighto7700/code_reviewer/issues"
+  },
+  "homepage": "https://github.com/brighto7700/code_reviewer#readme",
+  "dependencies": {
+    "express": "^5.2.1",
+    "groq-sdk": "^1.1.2",
+    "telegraf": "^4.16.3"
+  }
+}
