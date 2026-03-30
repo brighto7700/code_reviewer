@@ -1,7 +1,7 @@
 import os
 import sys
-import time
 import asyncio
+import traceback
 import logging
 from threading import Thread
 from flask import Flask
@@ -11,7 +11,7 @@ from telegram.constants import ChatType
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from groq import Groq
 
-# --- Force Instant Logs ---
+# Force instant logs
 try:
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
@@ -20,14 +20,14 @@ except AttributeError:
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- 1. THE WEB SERVER (Satisfies Pxxl App) ---
+# --- 1. THE WEB SERVER ---
 app = Flask(__name__)
 
 @app.route('/')
 def health_check():
     return "CodeBot Web Server is Online!", 200
 
-# --- 2. THE BOT (Runs safely in the background) ---
+# --- 2. THE BOT ---
 MODEL_NAME = "llama-3.3-70b-versatile"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,8 +78,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text="❌ An error occurred generating a response.")
 
 def run_bot():
-    # Delay bot startup by 3 seconds so Gunicorn can bind the port and pass the health check first!
-    time.sleep(3)
     print("📡 Initializing Telegram Bot in background...")
     try:
         telegram_token = os.environ.get('TELEGRAM_TOKEN', '').strip()
@@ -97,9 +95,14 @@ def run_bot():
         print("✅ Bot is actively polling!")
         application.run_polling(drop_pending_updates=True, stop_signals=())
     except Exception as e:
-        import traceback
         print("\n❌ FATAL BOT CRASH ❌")
         traceback.print_exc()
 
-# Starts the thread as soon as Gunicorn imports this file
-Thread(target=run_bot, daemon=True).start()
+if __name__ == '__main__':
+    # 1. Start the bot in a background thread
+    Thread(target=run_bot, daemon=True).start()
+    
+    # 2. Run the Flask web server in the main thread (Just like Render does!)
+    port = int(os.environ.get("PORT", 8080))
+    print(f"🌐 Starting web server on port {port}...")
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
