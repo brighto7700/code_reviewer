@@ -1,7 +1,7 @@
 import os
 import sys
+import time
 import asyncio
-import traceback
 import logging
 from threading import Thread
 from flask import Flask
@@ -11,7 +11,7 @@ from telegram.constants import ChatType
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from groq import Groq
 
-# Force instant logs
+# --- Force Instant Logs ---
 try:
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
@@ -20,11 +20,14 @@ except AttributeError:
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- 1. WEB SERVER ---
+# --- 1. THE WEB SERVER (Satisfies Pxxl App) ---
 app = Flask(__name__)
-bot_thread = None  # Tracks the bot thread globally
 
-# --- 2. TELEGRAM BOT LOGIC ---
+@app.route('/')
+def health_check():
+    return "CodeBot Web Server is Online!", 200
+
+# --- 2. THE BOT (Runs safely in the background) ---
 MODEL_NAME = "llama-3.3-70b-versatile"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,6 +78,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text="❌ An error occurred generating a response.")
 
 def run_bot():
+    # Delay bot startup by 3 seconds so Gunicorn can bind the port and pass the health check first!
+    time.sleep(3)
     print("📡 Initializing Telegram Bot in background...")
     try:
         telegram_token = os.environ.get('TELEGRAM_TOKEN', '').strip()
@@ -92,23 +97,9 @@ def run_bot():
         print("✅ Bot is actively polling!")
         application.run_polling(drop_pending_updates=True, stop_signals=())
     except Exception as e:
+        import traceback
         print("\n❌ FATAL BOT CRASH ❌")
         traceback.print_exc()
 
-# --- 3. THE "LAZY LOAD" TRIGGER ---
-@app.route('/')
-def health_check():
-    global bot_thread
-    # When Pxxl App pings this URL to see if the server is alive, 
-    # it acts as the perfect trigger to safely start our bot!
-    if bot_thread is None or not bot_thread.is_alive():
-        print("🔄 Health check ping received! Triggering bot startup...")
-        bot_thread = Thread(target=run_bot, daemon=True)
-        bot_thread.start()
-        
-    return "CodeBot Web Server is Online!", 200
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
-        
+# Starts the thread as soon as Gunicorn imports this file
+Thread(target=run_bot, daemon=True).start()
