@@ -1,8 +1,8 @@
 import os
 import logging
 import asyncio
-from threading import Thread # Added for Keep-Alive
-from flask import Flask      # Added for Keep-Alive
+from threading import Thread 
+from flask import Flask      
 
 # Telegram libraries
 from telegram import Update
@@ -12,22 +12,12 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 # Groq library
 from groq import Groq
 
-# --- KEEP ALIVE SETUP (For Render Free Tier) ---
+# --- WEB SERVER SETUP (For Pxxl App Health Checks) ---
 app = Flask(__name__)
 
 @app.route('/')
 def health_check():
     return "CodeBot is Online!", 200
-
-def run_flask():
-    # Render provides a PORT environment variable automatically
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
 
 # --- CONFIGURATION ---
 try:
@@ -47,7 +37,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# [Your existing start and handle_message functions remain exactly the same]
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
@@ -58,7 +47,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # (Existing logic you provided...)
     user_text = update.message.text
     chat_type = update.message.chat.type
     chat_id = update.effective_chat.id
@@ -83,8 +71,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context_status = "Thinking..."
 
-    system_prompt = "You are CodeBot..." # (Your existing system prompt)
+    system_prompt = "You are CodeBot, an expert senior software engineer and code reviewer."
     messages_payload = [{"role": "system", "content": system_prompt}]
+    
     if replied_code:
         messages_payload.append({"role": "user", "content": f"HERE IS THE CODE CONTEXT:\n```\n{replied_code}\n```"})
     messages_payload.append({"role": "user", "content": user_text})
@@ -97,16 +86,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Error: {e}")
 
-if __name__ == '__main__':
-    # 1. Start the Flask server in the background
-    print("📡 Starting Keep-Alive server...")
-    keep_alive()
-
-    # 2. Start the Telegram Bot
+# --- THE FIX: RUN BOT IN BACKGROUND ---
+def run_bot():
+    print("📡 Starting Telegram Bot in background...")
+    # Because it's a new background thread, it needs its own async loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler('start', start))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-
+    
     print(f"✅ CodeBot Smart Mode is running on {MODEL_NAME}...")
     application.run_polling(drop_pending_updates=True)
-    
+
+# This thread starts the exact moment Gunicorn loads your file!
+bot_thread = Thread(target=run_bot)
+bot_thread.daemon = True
+bot_thread.start()
