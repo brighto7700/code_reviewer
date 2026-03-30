@@ -1,5 +1,7 @@
 import os
 import sys
+import asyncio
+import traceback
 import logging
 from threading import Thread
 from flask import Flask
@@ -9,7 +11,7 @@ from telegram.constants import ChatType
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from groq import Groq
 
-# --- Force Instant Logs ---
+# Force instant logs
 try:
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
@@ -18,20 +20,11 @@ except AttributeError:
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- 1. WEB SERVER (Runs quietly in the background) ---
+# --- 1. WEB SERVER ---
 app = Flask(__name__)
+bot_thread = None  # Tracks the bot thread globally
 
-@app.route('/')
-def health_check():
-    return "CodeBot Web Server is Online!", 200
-
-def run_flask():
-    # Python securely grabs the port here, bypassing the dashboard's bugs!
-    port = int(os.environ.get("PORT", 8080))
-    print(f"🌐 Starting Flask health check server on port {port}...")
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
-
-# --- 2. TELEGRAM BOT (Runs securely in the Main Thread) ---
+# --- 2. TELEGRAM BOT LOGIC ---
 MODEL_NAME = "llama-3.3-70b-versatile"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -81,30 +74,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Groq API Error: {e}")
         await context.bot.send_message(chat_id=chat_id, text="❌ An error occurred generating a response.")
 
-def main():
-    telegram_token = os.environ.get('TELEGRAM_TOKEN', '').strip()
-    if not telegram_token:
-        print("❌ ERROR: TELEGRAM_TOKEN missing from environment variables!")
-        sys.exit(1)
-        
-    print("📡 Building Telegram Bot...")
-    application = ApplicationBuilder().token(telegram_token).build()
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
-    print("✅ CodeBot is actively polling in the main thread!")
-    application.run_polling(drop_pending_updates=True)
-
-# --- 3. EXECUTION ---
-if __name__ == '__main__':
-    # 1. Start Flask web server in the background thread first
-    web_thread = Thread(target=run_flask, daemon=True)
-    web_thread.start()
-
-    # 2. Start Telegram Bot in the main thread safely
+def run_bot():
+    print("📡 Initializing Telegram Bot in background...")
     try:
-        main()
+        telegram_token = os.environ.get('TELEGRAM_TOKEN', '').strip()
+        if not telegram_token:
+            print("❌ ERROR: TELEGRAM_TOKEN missing from environment variables!")
+            return
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        application = ApplicationBuilder().token(telegram_token).build()
+        application.add_handler(CommandHandler('start', start))
+        application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+        
+        print("✅ Bot is actively polling!")
+        application.run_polling(drop_pending_updates=True, stop_signals=())
     except Exception as e:
-        print(f"❌ FATAL ERROR IN BOT MAIN THREAD: {e}")
-        sys.exit(1)
-    
+        print("\n❌ FATAL BOT CRASH ❌")
+        traceback.print_exc()
+
+# --- 3. THE "LAZY LOAD" TRIGGER ---
+@app.route('/')
+def health_check():
+    global bot_thread
+    # When Pxxl App pings this URL to see if the server is alive, 
+    # it acts as the perfect trigger to safely start our bot!
+    if bot_thread is None or not bot_thread.is_alive():
+        print("🔄 Health check ping received! Triggering bot startup...")
+        bot_thread = Thread(target=run_bot, daemon=True)
+        bot_thread.start()
+        
+    return "CodeBot Web Server is Online!", 200
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
+        
