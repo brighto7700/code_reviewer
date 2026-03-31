@@ -21,7 +21,7 @@ if (!telegramToken || !groqApiKey) {
 
 const bot = new Telegraf(telegramToken);
 const groq = new Groq({ apiKey: groqApiKey });
-const MODEL_NAME = "mixtral-8x7b-32768";
+const MODEL_NAME = "qwen/qwen3-32b";
 
 // --- 3. MEMORY SETUP ---
 const chatMemory = new Map();
