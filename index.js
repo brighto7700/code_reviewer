@@ -21,7 +21,7 @@ if (!telegramToken || !groqApiKey) {
 
 const bot = new Telegraf(telegramToken);
 const groq = new Groq({ apiKey: groqApiKey });
-const MODEL_NAME = "llama-3.3-70b-versatile";
+const MODEL_NAME = "mixtral-8x7b-32768";
 
 // --- 3. MEMORY SETUP ---
 const chatMemory = new Map();
