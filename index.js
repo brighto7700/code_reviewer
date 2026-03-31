@@ -177,7 +177,7 @@ bot.on('text', async (ctx) => {
             const secondResponse = await groq.chat.completions.create({
                 messages: messagesPayload,
                 model: MODEL_NAME,
-                temperature: 0.1
+                temperature: 0.7
             });
 
             const finalAnswer = secondResponse.choices[0].message.content;
