@@ -2,168 +2,113 @@ const express = require('express');
 const { Telegraf } = require('telegraf');
 const Groq = require('groq-sdk');
 
-// --- 1. HEALTH CHECK SERVER ---
 const app = express();
-app.get('/', (req, res) => res.status(200).send('CodeBot Node.js Server is Online!'));
+app.get('/', (req, res) => res.status(200).send('CodeBot is Online!'));
+app.listen(process.env.PORT || 8080);
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`🌐 Express web server listening on port ${PORT}`));
+const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// --- 2. CONFIGURATION & SETUP ---
-const telegramToken = process.env.TELEGRAM_TOKEN;
-const groqApiKey = process.env.GROQ_API_KEY;
-
-if (!telegramToken || !groqApiKey) {
-    console.error("❌ ERROR: Missing TELEGRAM_TOKEN or GROQ_API_KEY.");
-    process.exit(1);
-}
-
-const bot = new Telegraf(telegramToken);
-const groq = new Groq({ apiKey: groqApiKey });
-
-// Using Groq's compound system which has web search built-in natively
 const MODEL_NAME = "groq/compound";
-
-// --- 3. MEMORY SETUP ---
 const chatMemory = new Map();
-const MAX_HISTORY = 6; 
+const MAX_HISTORY = 4; 
 
-// --- 4. MESSAGE CHUNKER ---
-async function sendLongResponse(ctx, chatId, statusMsgId, fullText) {
-    const MAX_LENGTH = 4000;
-    
-    if (fullText.length <= MAX_LENGTH) {
-        try {
-            await ctx.telegram.editMessageText(chatId, statusMsgId, undefined, fullText, { parse_mode: 'Markdown' });
-        } catch (e) {
-            await ctx.telegram.editMessageText(chatId, statusMsgId, undefined, fullText);
+// --- 1. RETRY WRAPPER (Fixes the 429 error) ---
+async function requestWithRetry(payload, retries = 2) {
+    try {
+        return await groq.chat.completions.create(payload);
+    } catch (error) {
+        if (error.status === 429 && retries > 0) {
+            // Extract wait time from error or default to 4 seconds
+            const waitTime = error.message.match(/(\d+\.\d+)s/) ? parseFloat(error.message.match(/(\d+\.\d+)s/)[1]) * 1000 : 4000;
+            console.log(`⚠️ Rate limited. Retrying in ${waitTime/1000}s...`);
+            await new Promise(resolve => setTimeout(resolve, waitTime + 500)); 
+            return requestWithRetry(payload, retries - 1);
         }
-        return;
-    }
-
-    const chunks = [];
-    let currentChunk = "";
-    const lines = fullText.split('\n');
-
-    for (const line of lines) {
-        if ((currentChunk.length + line.length + 1) > MAX_LENGTH) {
-            chunks.push(currentChunk);
-            currentChunk = line + '\n';
-        } else {
-            currentChunk += line + '\n';
-        }
-    }
-    if (currentChunk) chunks.push(currentChunk);
-
-    await ctx.telegram.editMessageText(chatId, statusMsgId, undefined, chunks[0]);
-    for (let i = 1; i < chunks.length; i++) {
-        await ctx.telegram.sendMessage(chatId, chunks[i]);
+        throw error;
     }
 }
 
-// --- 5. MEMORY SUMMARIZER (Strict Mode) ---
+// --- 2. BACKGROUND SUMMARIZER ---
 async function summarizeForMemory(text) {
-    if (text.length <= 50) return text;
-
+    if (!text || text.length <= 40) return text || "";
     try {
-        console.log("📝 Summarizing bot response to save memory...");
-        const summaryResponse = await groq.chat.completions.create({
+        const res = await requestWithRetry({
             messages: [
-                { role: "system", content: "You are a memory assistant. Summarize the following text in 1 concise sentence so the main AI remembers the core context." },
+                { role: "system", content: "Summarize into ONE short sentence for AI memory." },
                 { role: "user", content: text }
             ],
-            model: "llama3-8b-8192", 
-            temperature: 0.3,
-            max_tokens: 150
+            model: "llama-3.1-8b-instant",
+            temperature: 0.1,
+            max_tokens: 60
         });
-        
-        return `[Summary]: ${summaryResponse.choices[0].message.content}`;
-    } catch (error) {
-        console.error("⚠️ Summary failed, falling back to truncation:", error.message);
-        return text.substring(0, 500) + "\n...[Truncated]";
-    }
+        return `[Context]: ${res.choices[0].message.content}`;
+    } catch (e) { return text.substring(0, 200); }
 }
 
-// --- 6. TELEGRAM BOT LOGIC ---
-bot.start((ctx) => {
-    chatMemory.set(ctx.chat.id, []);
-    ctx.reply("🧠 **I am CodeBot (Smart Mode)**\n\nNo commands needed! Just talk to me naturally. I can search the web automatically if you ask for live data!", { parse_mode: 'Markdown' });
-});
+// --- 3. MESSAGE CHUNKER ---
+async function sendLongResponse(ctx, chatId, statusMsgId, fullText) {
+    const MAX = 4000;
+    if (fullText.length <= MAX) {
+        return ctx.telegram.editMessageText(chatId, statusMsgId, undefined, fullText, { parse_mode: 'Markdown' })
+            .catch(() => ctx.telegram.editMessageText(chatId, statusMsgId, undefined, fullText));
+    }
+    const chunks = fullText.match(/[\s\S]{1,4000}/g) || [];
+    await ctx.telegram.editMessageText(chatId, statusMsgId, undefined, chunks[0]);
+    for (let i = 1; i < chunks.length; i++) await ctx.telegram.sendMessage(chatId, chunks[i]);
+}
 
+// --- 4. BOT LOGIC ---
 bot.on('text', async (ctx) => {
     const userText = ctx.message.text;
     const chatId = ctx.chat.id;
-    const botUsername = ctx.botInfo.username;
+    const botId = ctx.botInfo.id;
 
-    let shouldReply = false;
-    if (ctx.chat.type === 'private') shouldReply = true;
-    else if (userText.includes(`@${botUsername}`) || userText.toLowerCase().includes('codebot')) shouldReply = true;
-    else if (ctx.message.reply_to_message && ctx.message.reply_to_message.from.id === ctx.botInfo.id) shouldReply = true;
-
-    if (!shouldReply) return;
+    if (ctx.chat.type !== 'private') {
+        const isReplyToMe = ctx.message.reply_to_message?.from?.id === botId;
+        const mentionsMe = userText.toLowerCase().includes('codebot');
+        if (!isReplyToMe && !mentionsMe) return;
+    }
 
     if (!chatMemory.has(chatId)) chatMemory.set(chatId, []);
     const history = chatMemory.get(chatId);
 
-    let repliedCode = "";
-    let contextStatus = "Thinking...";
-    let targetMsgId = ctx.message.message_id;
-
-    if (ctx.message.reply_to_message) {
-        repliedCode = ctx.message.reply_to_message.text || ctx.message.reply_to_message.caption || "";
-        targetMsgId = ctx.message.reply_to_message.message_id;
-        if (repliedCode) contextStatus = "Scanning context...";
-    }
-
-    const messagesPayload = [
-        { role: "system", content: "You are CodeBot, an expert senior software engineer. You have native web search capabilities. Provide helpful, accurate, and concise coding assistance." },
-        ...history 
-    ];
-    
-    let newPrompt = userText;
-    if (repliedCode) {
-        newPrompt = `HERE IS THE CODE CONTEXT:\n\`\`\`\n${repliedCode}\n\`\`\`\n\nUser Question: ${userText}`;
-    }
-    
-    // We send the FULL prompt to Groq for the current answer
-    messagesPayload.push({ role: "user", content: newPrompt });
+    const statusMsg = await ctx.reply("⚡ Thinking...", { reply_to_message_id: ctx.message.message_id });
 
     try {
-        const statusMsg = await ctx.reply(`⚡ ${contextStatus}`, { reply_to_message_id: targetMsgId });
-        
-        const chatCompletion = await groq.chat.completions.create({
-            messages: messagesPayload,
-            model: MODEL_NAME,
-            temperature: 0.6
+        const chatCompletion = await requestWithRetry({
+            messages: [
+                { role: "system", content: "You are CodeBot. Use built-in search for live data. Format screenshots as: [SCREENSHOT:https://url]" },
+                ...history,
+                { role: "user", content: userText }
+            ],
+            model: MODEL_NAME
         });
 
-        const finalAnswer = chatCompletion.choices[0].message.content;
+        let finalAnswer = chatCompletion.choices[0].message.content;
 
-        // 1. Send the FULL response to the user immediately
+        // Screenshot Detection
+        const ssMatch = finalAnswer.match(/\[SCREENSHOT:(https?:\/\/[^\s\]]+)\]/);
+        if (ssMatch) {
+            const url = ssMatch[1];
+            const ssUrl = `https://image.thum.io/get/width/1200/crop/900/noanimate/${url}`;
+            await ctx.replyWithPhoto({ url: ssUrl }, { caption: `📸 Captured: ${url}`, reply_to_message_id: ctx.message.message_id });
+            finalAnswer = finalAnswer.replace(ssMatch[0], "(Screenshot sent above)");
+        }
+
         await sendLongResponse(ctx, chatId, statusMsg.message_id, finalAnswer);
 
-        // 2. Protect memory from giant user code dumps (keep max 2000 chars of user input)
-        const safeUserPrompt = newPrompt.length > 2000 
-            ? newPrompt.substring(0, 2000) + "\n...[User input truncated for memory limit]" 
-            : newPrompt;
-
-        // 3. Silently summarize the bot's answer in the background
-        const memorySafeAnswer = await summarizeForMemory(finalAnswer);
-
-        // 4. Update memory with safe sizes for BOTH user and assistant
-        history.push({ role: "user", content: safeUserPrompt });
-        history.push({ role: "assistant", content: memorySafeAnswer });
-        
-        // 5. Keep array size in check
+        // Update Memory
+        const userMem = userText.length > 500 ? await summarizeForMemory(userText) : userText;
+        const botMem = await summarizeForMemory(finalAnswer);
+        history.push({ role: "user", content: userMem });
+        history.push({ role: "assistant", content: botMem });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
     } catch (error) {
-        console.error("API Error:", error);
-        ctx.reply(`❌ **SYSTEM ERROR:**\n\`\`\`text\n${error.message || "Unknown API Error"}\n\`\`\``, { parse_mode: 'Markdown' });
+        console.error(error);
+        ctx.telegram.editMessageText(chatId, statusMsg.message_id, undefined, `❌ Rate Limit: I'm cooling down for a moment. Try again in a few seconds.`);
     }
 });
 
-// --- 7. LAUNCH THE BOT ---
-bot.launch().then(() => console.log(`✅ CodeBot is actively polling!`));
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+bot.launch();
