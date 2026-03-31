@@ -1,9 +1,9 @@
 const express = require('express');
 const { Telegraf } = require('telegraf');
 const Groq = require('groq-sdk');
-const google = require('googlethis'); 
 
 // --- 1. HEALTH CHECK SERVER ---
+// Keeps the bot alive on cloud hosting platforms
 const app = express();
 app.get('/', (req, res) => res.status(200).send('CodeBot Node.js Server is Online!'));
 
@@ -21,25 +21,31 @@ if (!telegramToken || !groqApiKey) {
 
 const bot = new Telegraf(telegramToken);
 const groq = new Groq({ apiKey: groqApiKey });
-const MODEL_NAME = "qwen/qwen3-32b";
+
+// Using Groq's compound system which has web search built-in natively
+const MODEL_NAME = "groq/compound";
 
 // --- 3. MEMORY SETUP ---
 const chatMemory = new Map();
 const MAX_HISTORY = 6; 
 
 // --- 4. MESSAGE CHUNKER ---
+// Bypasses Telegram's 4000 character limit by splitting long messages
 async function sendLongResponse(ctx, chatId, statusMsgId, fullText) {
     const MAX_LENGTH = 4000;
     
+    // If it's short enough, just edit the thinking message
     if (fullText.length <= MAX_LENGTH) {
         try {
             await ctx.telegram.editMessageText(chatId, statusMsgId, undefined, fullText, { parse_mode: 'Markdown' });
         } catch (e) {
+            // Fallback if Markdown parsing fails
             await ctx.telegram.editMessageText(chatId, statusMsgId, undefined, fullText);
         }
         return;
     }
 
+    // If it's too long, split it up intelligently by lines
     const chunks = [];
     let currentChunk = "";
     const lines = fullText.split('\n');
@@ -54,37 +60,17 @@ async function sendLongResponse(ctx, chatId, statusMsgId, fullText) {
     }
     if (currentChunk) chunks.push(currentChunk);
 
+    // Edit the first status message, then send the rest as new messages
     await ctx.telegram.editMessageText(chatId, statusMsgId, undefined, chunks[0]);
     for (let i = 1; i < chunks.length; i++) {
         await ctx.telegram.sendMessage(chatId, chunks[i]);
     }
 }
 
-// --- 5. THE WEB SEARCH TOOL ---
-const tools = [
-    {
-        type: "function",
-        function: {
-            name: "search_web",
-            description: "Searches the web using Google to find real-time information, articles, and news. Use this when the user asks for links, current events, or facts you aren't sure about.",
-            parameters: {
-                type: "object",
-                properties: {
-                    query: { 
-                        type: "string", 
-                        description: "The search query (e.g., 'latest react projects dev.to')" 
-                    }
-                },
-                required: ["query"]
-            }
-        }
-    }
-];
-
-// --- 6. TELEGRAM BOT LOGIC ---
+// --- 5. TELEGRAM BOT LOGIC ---
 bot.start((ctx) => {
     chatMemory.set(ctx.chat.id, []);
-    ctx.reply("🧠 **I am CodeBot (Smart Mode)**\n\nNo commands needed! Just talk to me naturally. I can now search Google for you!", { parse_mode: 'Markdown' });
+    ctx.reply("🧠 **I am CodeBot (Smart Mode)**\n\nNo commands needed! Just talk to me naturally. I can search the web automatically if you ask for live data!", { parse_mode: 'Markdown' });
 });
 
 bot.on('text', async (ctx) => {
@@ -92,6 +78,7 @@ bot.on('text', async (ctx) => {
     const chatId = ctx.chat.id;
     const botUsername = ctx.botInfo.username;
 
+    // Determine if the bot should reply based on chat type and mentions
     let shouldReply = false;
     if (ctx.chat.type === 'private') shouldReply = true;
     else if (userText.includes(`@${botUsername}`) || userText.toLowerCase().includes('codebot')) shouldReply = true;
@@ -99,6 +86,7 @@ bot.on('text', async (ctx) => {
 
     if (!shouldReply) return;
 
+    // Initialize or fetch memory for this specific chat
     if (!chatMemory.has(chatId)) chatMemory.set(chatId, []);
     const history = chatMemory.get(chatId);
 
@@ -106,14 +94,16 @@ bot.on('text', async (ctx) => {
     let contextStatus = "Thinking...";
     let targetMsgId = ctx.message.message_id;
 
+    // Check if the user is replying to a specific message to provide code context
     if (ctx.message.reply_to_message) {
         repliedCode = ctx.message.reply_to_message.text || ctx.message.reply_to_message.caption || "";
         targetMsgId = ctx.message.reply_to_message.message_id;
         if (repliedCode) contextStatus = "Scanning context...";
     }
 
-            const messagesPayload = [
-        { role: "system", content: "You are CodeBot, an expert senior software engineer. You are equipped with a real-time web search function. When asked about current events, prices, or live data, you MUST use your search function to fetch the answer. Never apologize or say you cannot provide real-time data, because you have the tools to do so!" },
+    // Build the payload for the AI
+    const messagesPayload = [
+        { role: "system", content: "You are CodeBot, an expert senior software engineer. You have native web search capabilities. Provide helpful, accurate, and concise coding assistance." },
         ...history 
     ];
     
@@ -124,88 +114,35 @@ bot.on('text', async (ctx) => {
     messagesPayload.push({ role: "user", content: newPrompt });
 
     try {
+        // Let the user know the bot is processing
         const statusMsg = await ctx.reply(`⚡ ${contextStatus}`, { reply_to_message_id: targetMsgId });
         
+        // Simple, clean API call. The model handles search automatically!
         const chatCompletion = await groq.chat.completions.create({
             messages: messagesPayload,
             model: MODEL_NAME,
-            temperature: 0.6,
-            tools: tools,
-            tool_choice: "auto"
+            temperature: 0.6
         });
 
-        const responseMessage = chatCompletion.choices[0].message;
-
-        if (responseMessage.tool_calls) {
-            await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, "🔍 Searching Google...");
+        const finalAnswer = chatCompletion.choices[0].message.content;
             
-            messagesPayload.push(responseMessage);
+        // Update memory
+        history.push({ role: "user", content: newPrompt });
+        history.push({ role: "assistant", content: finalAnswer });
+        if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
-            for (const toolCall of responseMessage.tool_calls) {
-                if (toolCall.function.name === "search_web") {
-                    const args = JSON.parse(toolCall.function.arguments);
-                    console.log(`AI is searching Google for: ${args.query}`);
-                    
-                    let formattedResults = "No results found.";
-                    
-                    try {
-                        const searchResults = await google.search(args.query, {
-                            page: 0,
-                            safe: false,
-                            parse_ads: false
-                        });
-                        
-                        if (searchResults && searchResults.results && searchResults.results.length > 0) {
-                            formattedResults = searchResults.results.slice(0, 5).map(res => 
-                                `Title: ${res.title}\nURL: ${res.url}\nDescription: ${res.description}`
-                            ).join('\n\n');
-                        }
-                    } catch (scrapeError) {
-                        console.error("Scraper Error:", scrapeError.message);
-                        formattedResults = "SYSTEM NOTE: The web search failed because the cloud server was blocked. Apologize to the user and tell them you cannot access the live internet right now.";
-                    }
-
-                    messagesPayload.push({
-                        tool_call_id: toolCall.id,
-                        role: "tool",
-                        name: "search_web",
-                        content: formattedResults
-                    });
-                }
-            }
-
-            const secondResponse = await groq.chat.completions.create({
-                messages: messagesPayload,
-                model: MODEL_NAME,
-                temperature: 0.7
-            });
-
-            const finalAnswer = secondResponse.choices[0].message.content;
-            
-            history.push({ role: "user", content: newPrompt });
-            history.push({ role: "assistant", content: finalAnswer });
-            if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-
-            await sendLongResponse(ctx, chatId, statusMsg.message_id, finalAnswer);
-
-        } else {
-            const botResponse = responseMessage.content;
-            
-            history.push({ role: "user", content: newPrompt });
-            history.push({ role: "assistant", content: botResponse });
-            if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-
-            await sendLongResponse(ctx, chatId, statusMsg.message_id, botResponse);
-        }
+        // Send the final result back to Telegram
+        await sendLongResponse(ctx, chatId, statusMsg.message_id, finalAnswer);
 
     } catch (error) {
         console.error("API Error:", error);
-        // Expose the raw error to Telegram so we stop guessing!
         ctx.reply(`❌ **SYSTEM ERROR:**\n\`\`\`text\n${error.message || "Unknown API Error"}\n\`\`\``, { parse_mode: 'Markdown' });
     }
 });
 
-// --- 7. LAUNCH THE BOT ---
+// --- 6. LAUNCH THE BOT ---
 bot.launch().then(() => console.log(`✅ CodeBot is actively polling!`));
+
+// Enable graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
